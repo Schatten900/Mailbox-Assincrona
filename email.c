@@ -2,10 +2,12 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <unistd.h>
+#include <time.h>
 
 #define N 50
 #define LEITORES 10
 #define ESCRITORES 5
+#define INTERVALO_ENVELHECIMENTO 30
 
 typedef enum {
     VAZIO,
@@ -20,7 +22,7 @@ typedef struct{
     char titulo[100];
     char descricao[500];
     int prioridade; // 1 - Baixa 2 - Medio 3 - Alta
-    int tempo;      // Aumenta a prioridade ao passar do tempo
+    time_t instante_entrada; // Horário em que ficou disponível
 
 } Email;
 
@@ -45,6 +47,8 @@ typedef struct{
 void * inserir_email(void * args);
 
 void * ler_email(void * args);
+
+int calcular_prioridade(Email email);
 
 
 int main(){
@@ -118,7 +122,6 @@ void * inserir_email(void * args){
     int id = arg->id;
 
     while (1){
-
         int indice_uso = -1;
 
         sem_wait(&caixa->vagas_disponiveis); // Espera ter uma vaga disponivel
@@ -154,7 +157,6 @@ void * inserir_email(void * args){
         email.id = caixa->proxEmail++;
         sem_post(&caixa->mutex);
 
-        email.tempo = 0;
         email.prioridade = (rand() % 3) + 1;
 
         snprintf(email.titulo, sizeof(email.titulo),
@@ -169,7 +171,10 @@ void * inserir_email(void * args){
 
         /* Publica o email para leitores */
         sem_wait(&caixa->mutex);
+
+        caixa->emails[indice_uso].instante_entrada = time(NULL);    // Tempo em que foi inserido
         caixa->estados[indice_uso] = DISPONIVEL;
+
         sem_post(&caixa->emails_disponiveis);       // Libera uma entrada para leitura
         sem_post(&caixa->mutex);
 
@@ -198,12 +203,22 @@ void * ler_email(void * args){
 
         int indice_uso = -1;
         int maior_prioridade = -1;
+        time_t tempo_mais_antigo = 0;
 
         for (int i=0; i < N; i++){
-            if (caixa->estados[i] == DISPONIVEL && caixa->emails[i].prioridade > maior_prioridade){
-                maior_prioridade = caixa->emails[i].prioridade;
-                indice_uso = i;
-            } 
+            if (caixa->estados[i] == DISPONIVEL){
+                int prioridade_atual = calcular_prioridade(caixa->emails[i]);
+
+                time_t entrada_atual = caixa->emails[i].instante_entrada;
+
+                if (prioridade_atual > maior_prioridade || (prioridade_atual == maior_prioridade &&
+                (indice_uso == -1 || entrada_atual < tempo_mais_antigo || (entrada_atual == tempo_mais_antigo &&
+                caixa->emails[i].id < caixa->emails[indice_uso].id)))) {
+                    maior_prioridade = prioridade_atual;
+                    tempo_mais_antigo = entrada_atual;
+                    indice_uso = i;
+                } 
+            }
         }
 
          // Não encontrou disponivel
@@ -250,3 +265,20 @@ void * ler_email(void * args){
     pthread_exit(0);
 
 }
+
+/* Calcula a nova prioridade de e-mails não consumidos*/
+int calcular_prioridade(Email email){
+    time_t tempo_atual = time(NULL);
+
+    int tempo_espera = (int)difftime(tempo_atual, email.instante_entrada);
+    int aumento = tempo_espera / INTERVALO_ENVELHECIMENTO;
+
+    int prioridade_efetiva = email.prioridade + aumento;
+
+    if (prioridade_efetiva > 3){
+        prioridade_efetiva = 3;
+    }
+
+    return prioridade_efetiva;
+
+}   
